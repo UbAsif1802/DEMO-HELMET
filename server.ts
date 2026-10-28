@@ -158,158 +158,160 @@ MANDATORY RULES:
       // Models to try in priority order: gemini-3.1-flash-lite is responsive and fast; fallback to gemini-3.8-flash
       const candidateModels = ['gemini-3.1-flash-lite', 'gemini-3.8-flash'];
 
-      for (const modelName of candidateModels) {
-        try {
-          response = await ai!.models.generateContent({
-            model: modelName,
-            contents: [
-              {
-                parts: [
-                  {
-                    inlineData: {
-                      mimeType: detectedMime,
-                      data: cleanBase64,
+      if (mode === 'cloud') {
+        for (const modelName of candidateModels) {
+          try {
+            response = await ai!.models.generateContent({
+              model: modelName,
+              contents: [
+                {
+                  parts: [
+                    {
+                      inlineData: {
+                        mimeType: detectedMime,
+                        data: cleanBase64,
+                      },
                     },
-                  },
-                  {
-                    text: promptText,
-                  },
-                ],
-              },
-            ],
-            config: {
-              responseMimeType: 'application/json',
-              responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                  quality_check: {
-                    type: Type.OBJECT,
-                    properties: {
-                      is_usable: { type: Type.BOOLEAN },
-                      message: { type: Type.STRING },
+                    {
+                      text: promptText,
                     },
-                    required: ['is_usable', 'message'],
-                  },
-                  summary: {
-                    type: Type.OBJECT,
-                    properties: {
-                      total_riders: { type: Type.INTEGER },
-                      wearing_helmet: { type: Type.INTEGER },
-                      no_helmet: { type: Type.INTEGER },
-                      triple_riding: { type: Type.INTEGER },
-                      cars_detected: { type: Type.INTEGER },
-                      seatbelt_issues: { type: Type.INTEGER },
-                      occupancy_issues: { type: Type.INTEGER },
-                      uncertain: { type: Type.INTEGER },
-                    },
-                    required: [
-                      'total_riders',
-                      'wearing_helmet',
-                      'no_helmet',
-                      'triple_riding',
-                      'cars_detected',
-                      'seatbelt_issues',
-                      'occupancy_issues',
-                      'uncertain',
-                    ],
-                  },
-                  detections: {
-                    type: Type.ARRAY,
-                    items: {
+                  ],
+                },
+              ],
+              config: {
+                responseMimeType: 'application/json',
+                responseSchema: {
+                  type: Type.OBJECT,
+                  properties: {
+                    quality_check: {
                       type: Type.OBJECT,
                       properties: {
-                        id: { type: Type.INTEGER },
-                        vehicle_type: {
-                          type: Type.STRING,
-                          enum: ['motorcycle', 'scooter', 'car', 'other'],
-                        },
-                        target_label: { type: Type.STRING },
-                        category: {
-                          type: Type.STRING,
-                          enum: [
-                            'NO_HELMET',
-                            'TRIPLE_RIDING',
-                            'POTENTIAL_SEATBELT_ISSUE',
-                            'POTENTIAL_OCCUPANCY_ISSUE',
-                            'UNCERTAIN',
-                            'NO_CONFIRMED_VIOLATION',
-                          ],
-                        },
-                        is_violation: { type: Type.BOOLEAN },
-                        is_potential: { type: Type.BOOLEAN },
-                        is_uncertain: { type: Type.BOOLEAN },
-                        confidence: { type: Type.NUMBER },
-                        confidence_level: {
-                          type: Type.STRING,
-                          enum: ['High', 'Medium', 'Low'],
-                        },
-                        evidence: { type: Type.STRING },
-                        occupants_count: { type: Type.INTEGER },
-                        helmet_status: {
-                          type: Type.STRING,
-                          enum: ['WEARING_HELMET', 'NO_HELMET', 'UNCERTAIN'],
-                        },
-                        seatbelt_status: {
-                          type: Type.STRING,
-                          enum: ['SEATBELT_VISIBLE', 'SEATBELT_NOT_VISIBLE', 'UNCERTAIN'],
-                        },
-                        license_plate: {
-                          type: Type.OBJECT,
-                          properties: {
-                            value: { type: Type.STRING },
-                            confidence: { type: Type.NUMBER },
-                            status: {
-                              type: Type.STRING,
-                              enum: ['READABLE', 'PARTIAL', 'NOT_READABLE'],
-                            },
-                          },
-                          required: ['value', 'confidence', 'status'],
-                        },
-                        timestamp: { type: Type.STRING },
-                        box_2d: {
-                          type: Type.ARRAY,
-                          items: { type: Type.NUMBER },
-                          description: '[ymin, xmin, ymax, xmax] 0-1000',
-                        },
+                        is_usable: { type: Type.BOOLEAN },
+                        message: { type: Type.STRING },
+                      },
+                      required: ['is_usable', 'message'],
+                    },
+                    summary: {
+                      type: Type.OBJECT,
+                      properties: {
+                        total_riders: { type: Type.INTEGER },
+                        wearing_helmet: { type: Type.INTEGER },
+                        no_helmet: { type: Type.INTEGER },
+                        triple_riding: { type: Type.INTEGER },
+                        cars_detected: { type: Type.INTEGER },
+                        seatbelt_issues: { type: Type.INTEGER },
+                        occupancy_issues: { type: Type.INTEGER },
+                        uncertain: { type: Type.INTEGER },
                       },
                       required: [
-                        'id',
-                        'vehicle_type',
-                        'target_label',
-                        'category',
-                        'is_violation',
-                        'is_potential',
-                        'is_uncertain',
-                        'confidence',
-                        'confidence_level',
-                        'evidence',
+                        'total_riders',
+                        'wearing_helmet',
+                        'no_helmet',
+                        'triple_riding',
+                        'cars_detected',
+                        'seatbelt_issues',
+                        'occupancy_issues',
+                        'uncertain',
                       ],
                     },
-                  },
-                  final_assessment: {
-                    type: Type.OBJECT,
-                    properties: {
-                      confirmed_violations: { type: Type.INTEGER },
-                      potential_issues: { type: Type.INTEGER },
-                      manual_review_required: { type: Type.BOOLEAN },
+                    detections: {
+                      type: Type.ARRAY,
+                      items: {
+                        type: Type.OBJECT,
+                        properties: {
+                          id: { type: Type.INTEGER },
+                          vehicle_type: {
+                            type: Type.STRING,
+                            enum: ['motorcycle', 'scooter', 'car', 'other'],
+                          },
+                          target_label: { type: Type.STRING },
+                          category: {
+                            type: Type.STRING,
+                            enum: [
+                              'NO_HELMET',
+                              'TRIPLE_RIDING',
+                              'POTENTIAL_SEATBELT_ISSUE',
+                              'POTENTIAL_OCCUPANCY_ISSUE',
+                              'UNCERTAIN',
+                              'NO_CONFIRMED_VIOLATION',
+                            ],
+                          },
+                          is_violation: { type: Type.BOOLEAN },
+                          is_potential: { type: Type.BOOLEAN },
+                          is_uncertain: { type: Type.BOOLEAN },
+                          confidence: { type: Type.NUMBER },
+                          confidence_level: {
+                            type: Type.STRING,
+                            enum: ['High', 'Medium', 'Low'],
+                          },
+                          evidence: { type: Type.STRING },
+                          occupants_count: { type: Type.INTEGER },
+                          helmet_status: {
+                            type: Type.STRING,
+                            enum: ['WEARING_HELMET', 'NO_HELMET', 'UNCERTAIN'],
+                          },
+                          seatbelt_status: {
+                            type: Type.STRING,
+                            enum: ['SEATBELT_VISIBLE', 'SEATBELT_NOT_VISIBLE', 'UNCERTAIN'],
+                          },
+                          license_plate: {
+                            type: Type.OBJECT,
+                            properties: {
+                              value: { type: Type.STRING },
+                              confidence: { type: Type.NUMBER },
+                              status: {
+                                type: Type.STRING,
+                                enum: ['READABLE', 'PARTIAL', 'NOT_READABLE'],
+                              },
+                            },
+                            required: ['value', 'confidence', 'status'],
+                          },
+                          timestamp: { type: Type.STRING },
+                          box_2d: {
+                            type: Type.ARRAY,
+                            items: { type: Type.NUMBER },
+                            description: '[ymin, xmin, ymax, xmax] 0-1000',
+                          },
+                        },
+                        required: [
+                          'id',
+                          'vehicle_type',
+                          'target_label',
+                          'category',
+                          'is_violation',
+                          'is_potential',
+                          'is_uncertain',
+                          'confidence',
+                          'confidence_level',
+                          'evidence',
+                        ],
+                      },
                     },
-                    required: ['confirmed_violations', 'potential_issues', 'manual_review_required'],
+                    final_assessment: {
+                      type: Type.OBJECT,
+                      properties: {
+                        confirmed_violations: { type: Type.INTEGER },
+                        potential_issues: { type: Type.INTEGER },
+                        manual_review_required: { type: Type.BOOLEAN },
+                      },
+                      required: ['confirmed_violations', 'potential_issues', 'manual_review_required'],
+                    },
                   },
+                  required: ['quality_check', 'summary', 'detections', 'final_assessment'],
                 },
-                required: ['quality_check', 'summary', 'detections', 'final_assessment'],
               },
-            },
-          });
-
-          if (response && response.text) {
-            break;
+            });
+  
+            if (response && response.text) {
+              break;
+            }
+          } catch (err: any) {
+            lastError = err;
+            console.warn(`Model ${modelName} attempt failed:`, err?.message || err);
           }
-        } catch (err: any) {
-          lastError = err;
-          console.warn(`Model ${modelName} attempt failed:`, err?.message || err);
         }
+  
       }
-
       if (!response || !response.text) {
         throw lastError || new Error('No response returned from AI model.');
       }
@@ -372,9 +374,7 @@ MANDATORY RULES:
     } catch (error: any) {
       console.error('Error analyzing traffic safety image:', error);
       // Never turn provider failures into fabricated detections.
-      const message = mode === 'local'
-        ? 'Local AI analysis failed. Check Ollama status and model configuration. No cloud fallback was attempted.'
-        : 'Gemini analysis failed. Check your API key, quota, model availability, and try again.';
+      const message = 'Analysis failed. Check the selected provider configuration and try again. Local Mode never falls back to Gemini.';
       return res.status(502).json({ error: message });
     }
   }
