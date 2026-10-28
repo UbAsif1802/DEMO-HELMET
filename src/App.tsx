@@ -33,7 +33,6 @@ export default function App() {
   );
   const [sidebarMobileOpen, setSidebarMobileOpen] = useState<boolean>(false);
   const [showUploadPanel, setShowUploadPanel] = useState<boolean>(false);
-  const [aiMode, setAiMode] = useState<'cloud' | 'local'>('cloud');
   const [challengeInput, setChallengeInput] = useState({
     problem: '',
     affected: '',
@@ -59,13 +58,29 @@ export default function App() {
         body: JSON.stringify({
           image: imageData,
           mimeType: 'image/jpeg',
-          mode: aiMode,
         }),
       });
 
+      const contentType = response.headers.get('content-type') || '';
       if (!response.ok) {
-        const errJson = await response.json().catch(() => null);
-        throw new Error(errJson?.error || 'Unable to analyze this image. Please try again.');
+        let errMessage = 'Unable to analyze this image. Please try again.';
+        if (contentType.includes('application/json')) {
+          const errJson = await response.json().catch(() => null);
+          if (errJson?.error) errMessage = errJson.error;
+        } else {
+          const rawText = await response.text().catch(() => '');
+          if (rawText.toLowerCase().includes('<!doctype') || rawText.toLowerCase().includes('<html')) {
+            errMessage = 'Server returned an HTML error. The backend or local AI model may be offline or unreachable.';
+          } else if (rawText.trim()) {
+            errMessage = rawText.slice(0, 150);
+          }
+        }
+        throw new Error(errMessage);
+      }
+
+      if (!contentType.includes('application/json')) {
+        const rawText = await response.text().catch(() => '');
+        throw new Error('Server returned an unexpected response format. Please verify your AI provider settings.');
       }
 
       const data: TrafficSafetyResponse = await response.json();
@@ -228,25 +243,6 @@ export default function App() {
 
         {/* Workspace Body (with bottom padding for Flutter mobile nav bar) */}
         <main className="flex-1 p-3.5 sm:p-4 lg:p-8 space-y-5 sm:space-y-6 max-w-7xl mx-auto w-full pb-24 lg:pb-8">
-          {/* AI Provider Selector */}
-          <section className="rounded-2xl border border-[#E2DDD3] bg-[#FAF8F4] p-4 sm:p-5 shadow-sm" aria-label="AI analysis mode">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <h2 className="text-sm font-bold text-[#1C1917]">AI Analysis Mode</h2>
-                <p className="mt-1 text-xs text-[#57534E]">
-                  {aiMode === 'cloud'
-                    ? 'Cloud Mode sends the selected image to Gemini. Each analysis uses your Gemini API quota.'
-                    : 'Local Mode sends the image to your configured Ollama server only. It will not fall back to Gemini.'}
-                </p>
-              </div>
-              <div className="inline-flex rounded-xl border border-[#CDC5B5] bg-white p-1 self-start" role="group" aria-label="Choose AI provider">
-                <button type="button" onClick={() => setAiMode('cloud')} aria-pressed={aiMode === 'cloud'} className={`rounded-lg px-4 py-2 text-xs font-bold transition-colors ${aiMode === 'cloud' ? 'bg-[#1C1917] text-white' : 'text-[#57534E] hover:bg-[#F4F1EA]'}`}>Cloud · Gemini</button>
-                <button type="button" onClick={() => setAiMode('local')} aria-pressed={aiMode === 'local'} className={`rounded-lg px-4 py-2 text-xs font-bold transition-colors ${aiMode === 'local' ? 'bg-[#0D9488] text-white' : 'text-[#57534E] hover:bg-[#F4F1EA]'}`}>Local · Ollama</button>
-              </div>
-            </div>
-            {aiMode === 'local' && <p className="mt-3 rounded-lg bg-teal-50 p-3 text-xs text-teal-900">Requires Ollama running where the MOOS backend runs, with a vision model pulled (default: <code>gemma3:12b</code>). If MOOS is hosted remotely, this does not use your laptop’s Ollama automatically.</p>}
-          </section>
-
           {/* Error Banner */}
           {errorMessage && (
             <div className="p-4 bg-rose-50 border border-rose-200 rounded-2xl flex items-center justify-between text-rose-800 text-xs">

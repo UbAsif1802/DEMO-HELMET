@@ -1,4 +1,4 @@
-﻿import express, { type Express } from 'express';
+import express, { type Express } from 'express';
 import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
 import path from 'path';
@@ -47,9 +47,35 @@ function asInteger(value: unknown, fallback: number): number {
 
 function parseResponseJson(raw: unknown, providerLabel: string): any {
   if (typeof raw === 'string') {
+    let text = raw.trim();
+
+    // Check if the server returned an HTML error page (e.g. 502/504 Bad Gateway, Nginx, or proxy)
+    if (text.toLowerCase().startsWith('<!doctype') || text.toLowerCase().startsWith('<html')) {
+      throw new ProviderAppError(`${providerLabel} endpoint returned an HTML page instead of JSON. Ensure the server address is reachable and not returning an error page.`, 502);
+    }
+
+    // Strip markdown code fences if model enclosed JSON in ```json ... ```
+    if (text.includes('```')) {
+      const match = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+      if (match && match[1]) {
+        text = match[1].trim();
+      }
+    }
+
+    // Try parsing directly
     try {
-      return JSON.parse(raw);
+      return JSON.parse(text);
     } catch {
+      // Try finding the outermost JSON object { ... }
+      const firstBrace = text.indexOf('{');
+      const lastBrace = text.lastIndexOf('}');
+      if (firstBrace !== -1 && lastBrace > firstBrace) {
+        try {
+          return JSON.parse(text.slice(firstBrace, lastBrace + 1));
+        } catch {
+          // Fall through to error
+        }
+      }
       throw new ProviderAppError(`${providerLabel} returned malformed JSON. Please verify the model output and try again.`, 502);
     }
   }
@@ -222,12 +248,7 @@ export function createApp(options: AppOptions = {}): Express {
   async function analyzeTraffic(req: express.Request, res: express.Response) {
     try {
       const payload = req.body ?? {};
-      const { image, imageUrl, mimeType, mode = 'cloud' } = payload;
-      const normalizedMode = typeof mode === 'string' ? mode.toLowerCase() : 'cloud';
-
-      if (normalizedMode !== 'cloud' && normalizedMode !== 'local') {
-        return res.status(400).json({ error: 'Invalid AI mode. Choose cloud or local.' });
-      }
+      const { image, imageUrl, mimeType } = payload;
 
       const rawImage = image ?? imageUrl;
       if (rawImage === undefined || rawImage === null || (typeof rawImage === 'string' && rawImage.trim().length === 0)) {
@@ -274,71 +295,38 @@ export function createApp(options: AppOptions = {}): Express {
         return res.status(413).json({ error: 'Image payload is empty or too large. Please use an image under 25 MB.' });
       }
 
-      const promptText = `You are a high-precision Municipal Traffic Safety AI. Carefully inspect the provided image and return only a valid JSON object matching the expected traffic-safety contract. Do not invent facts. If the scene is unclear, mark the result as uncertain and require manual review. Return a strong summary plus detection entries with a valid bounding box only when one is visible and reliable.`;
+      const promptText = `You are a high-precision Municipal Traffic Safety Vision AI.
+Exhaustively inspect the ENTIRE scene and detect EVERY SINGLE person and vehicle present (motorcycles, scooters, bicycles, cars).
+
+MANDATORY RULES FOR HELMET DETECTION:
+1. DETECT EVERY RIDER & PASSENGER:
+   - Scan left-to-right, foreground, midground, and background.
+   - For every person on a two-wheeler (motorcycle, scooter, bike):
+     * If head/hair/face is exposed without a helmet:
+       category = "NO_HELMET", is_violation = true, helmet_status = "NO_HELMET"
+     * If wearing a helmet:
+       category = "NO_CONFIRMED_VIOLATION", is_violation = false, helmet_status = "WEARING_HELMET"
+     * If head is obscured:
+       category = "UNCERTAIN", is_uncertain = true, helmet_status = "UNCERTAIN"
+
+2. OCCUPANCY & PASSENGERS:
+   - If 3 or more people on a single two-wheeler:
+     category = "TRIPLE_RIDING", is_violation = true.
+
+3. BOUNDING BOX (box_2d):
+   - Provide [ymin, xmin, ymax, xmax] coordinates on 0-1000 scale tightly surrounding each person and vehicle.
+
+4. LICENSE PLATES:
+   - If legible, provide value. If blurred/unreadable, status = "NOT_READABLE", value = "NOT_READABLE".`;
 
       let providerText: string | null = null;
 
-      if (normalizedMode === 'local') {
-        const ollamaBaseUrl = (process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434').replace(/\/$/, '');
-        const ollamaModel = process.env.OLLAMA_MODEL || 'gemma3:12b';
-        const timeoutMs = Number(process.env.OLLAMA_TIMEOUT_MS || 120000);
+      if (!aiClient) {
+        throw new ProviderAppError('Gemini Cloud Mode is not configured. Please ensure GEMINI_API_KEY is set.', 503);
+      }
 
-        if (!isLikelyVisionModel(ollamaModel)) {
-          throw new ProviderAppError(`Configured Ollama model '${ollamaModel}' may not support image input. Use a vision-capable model such as gemma3:12b.`, 400);
-        }
-
-        try {
-          const response = await fetchFn(`${ollamaBaseUrl}/api/chat`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            signal: AbortSignal.timeout(timeoutMs),
-            body: JSON.stringify({
-              model: ollamaModel,
-              stream: false,
-              format: 'json',
-              messages: [
-                {
-                  role: 'user',
-                  content: `${promptText} Return one JSON object with keys quality_check, summary, detections, and final_assessment. Each detection should include id, vehicle_type, target_label, category, is_violation, is_potential, is_uncertain, confidence, confidence_level, evidence, box_2d when visible, occupants_count when visible, helmet_status, and license_plate. Use only the provided category and status values. Never fabricate bounding boxes or detection details.`,
-                  images: [cleanBase64],
-                },
-              ],
-              options: { temperature: 0.1 },
-            }),
-          });
-
-          if (response.status === 404) {
-            throw new ProviderAppError(`Ollama model '${ollamaModel}' was not found. Pull it with: ollama pull ${ollamaModel}`, 503);
-          }
-          if (!response.ok) {
-            throw new ProviderAppError(`Ollama returned an error (${response.status}). Check the Ollama server logs.`, 502);
-          }
-
-          const payload = await response.json().catch(() => null);
-          const content = payload?.message?.content;
-          if (typeof content !== 'string' || !content.trim()) {
-            throw new ProviderAppError('Ollama returned an empty or invalid response. No cloud fallback was attempted.', 502);
-          }
-          providerText = content;
-        } catch (error) {
-          if (error instanceof ProviderAppError) {
-            throw error;
-          }
-          const timedOut = error instanceof Error && error.name === 'TimeoutError';
-          throw new ProviderAppError(
-            timedOut
-              ? 'Local AI timed out. Try a smaller image or increase OLLAMA_TIMEOUT_MS.'
-              : 'Cannot connect to Ollama. Start Ollama and confirm the local model is available. No cloud fallback was attempted.',
-            503,
-          );
-        }
-      } else {
-        if (!aiClient) {
-          throw new ProviderAppError('Gemini Cloud Mode is not configured. Add GEMINI_API_KEY or select Local Mode.', 503);
-        }
-
-        const candidateModels = ['gemini-2.5-flash', 'gemini-2.0-flash'];
-        let lastError: Error | null = null;
+      const candidateModels = ['gemini-3.1-flash-lite', 'gemini-3.8-flash'];
+      let lastError: Error | null = null;
 
         for (const modelName of candidateModels) {
           try {
@@ -442,7 +430,6 @@ export function createApp(options: AppOptions = {}): Express {
         if (!providerText) {
           throw lastError ?? new ProviderAppError('No response returned from Gemini.', 502);
         }
-      }
 
       if (!providerText || !providerText.trim()) {
         throw new ProviderAppError('AI returned an empty response. Please try again.', 502);
@@ -455,7 +442,16 @@ export function createApp(options: AppOptions = {}): Express {
         return res.status(error.statusCode).json({ error: error.message });
       }
 
-      const message = error instanceof Error && error.message ? error.message : 'Analysis failed. Check the selected provider configuration and try again.';
+      let message = error instanceof Error && error.message ? error.message : 'Analysis failed. Check the selected provider configuration and try again.';
+      try {
+        const parsed = JSON.parse(message);
+        if (parsed?.error?.message) {
+          message = parsed.error.message;
+        }
+      } catch {
+        // Not a JSON string error, keep original message
+      }
+
       return res.status(502).json({ error: message });
     }
   }
