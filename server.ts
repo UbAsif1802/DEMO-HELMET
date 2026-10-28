@@ -1,28 +1,215 @@
-import express from 'express';
+﻿import express, { type Express } from 'express';
 import { createServer as createViteServer } from 'vite';
 import dotenv from 'dotenv';
 import path from 'path';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import { GoogleGenAI, Type } from '@google/genai';
 
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
+const ACCEPTED_IMAGE_MIME_TYPES = new Set([
+  'image/jpeg',
+  'image/jpg',
+  'image/png',
+  'image/webp',
+  'image/bmp',
+]);
 
-async function startServer() {
+export type AnalysisMode = 'cloud' | 'local';
+
+type AppOptions = {
+  aiClient?: GoogleGenAI | null;
+  fetchImpl?: typeof fetch;
+};
+
+class ProviderAppError extends Error {
+  statusCode: number;
+
+  constructor(message: string, statusCode = 502) {
+    super(message);
+    this.name = 'ProviderAppError';
+    this.statusCode = statusCode;
+  }
+}
+
+function normalizeMimeType(mimeType?: string): string {
+  const cleaned = typeof mimeType === 'string' ? mimeType : '';
+  return cleaned.split(';')[0].trim().toLowerCase();
+}
+
+function asInteger(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.trunc(parsed) : fallback;
+}
+
+function parseResponseJson(raw: unknown, providerLabel: string): any {
+  if (typeof raw === 'string') {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      throw new ProviderAppError(`${providerLabel} returned malformed JSON. Please verify the model output and try again.`, 502);
+    }
+  }
+
+  if (raw && typeof raw === 'object') {
+    return raw;
+  }
+
+  throw new ProviderAppError(`${providerLabel} returned an empty or invalid response.`, 502);
+}
+
+function sanitizeDetection(detection: any, index: number): any {
+  const rawConfidence = Number(detection?.confidence ?? 0);
+  const confidence = Number.isFinite(rawConfidence) ? Math.min(Math.max(rawConfidence, 0), 1) : 0;
+  const numericBox = Array.isArray(detection?.box_2d) ? detection.box_2d : [];
+  const box_2d = numericBox.length === 4 && numericBox.every((value: unknown) => typeof value === 'number' && Number.isFinite(value))
+    ? [Number(numericBox[0]), Number(numericBox[1]), Number(numericBox[2]), Number(numericBox[3])] as [number, number, number, number]
+    : undefined;
+
+  const licensePlate = detection?.license_plate && typeof detection.license_plate === 'object' ? detection.license_plate : {};
+  const licenseValue = typeof licensePlate.value === 'string' && licensePlate.value.trim() ? licensePlate.value : 'NOT_READABLE';
+  const licenseStatus = ['READABLE', 'PARTIAL', 'NOT_READABLE'].includes(licensePlate.status) ? licensePlate.status : 'NOT_READABLE';
+  const licenseConfidence = Number.isFinite(Number(licensePlate.confidence)) ? Number(licensePlate.confidence) : 0;
+
+  const vehicleType = typeof detection?.vehicle_type === 'string' && detection.vehicle_type.trim() ? detection.vehicle_type : 'other';
+  const category = typeof detection?.category === 'string' && detection.category.trim() ? detection.category : 'NO_CONFIRMED_VIOLATION';
+  const targetLabel = typeof detection?.target_label === 'string' && detection.target_label.trim() ? detection.target_label : `Detection ${index + 1}`;
+
+  const confidenceLevel = ['High', 'Medium', 'Low'].includes(detection?.confidence_level)
+    ? detection.confidence_level
+    : confidence >= 0.7
+      ? 'High'
+      : confidence >= 0.4
+        ? 'Medium'
+        : 'Low';
+
+  return {
+    id: asInteger(detection?.id ?? index + 1, index + 1),
+    vehicle_type: vehicleType,
+    target_label: targetLabel,
+    category,
+    is_violation: Boolean(detection?.is_violation),
+    is_potential: Boolean(detection?.is_potential),
+    is_uncertain: Boolean(detection?.is_uncertain),
+    confidence,
+    confidence_level: confidenceLevel,
+    evidence: typeof detection?.evidence === 'string' && detection.evidence.trim() ? detection.evidence : 'No supporting evidence was returned.',
+    occupants_count: Number.isInteger(detection?.occupants_count) ? asInteger(detection.occupants_count, 1) : undefined,
+    helmet_status: ['WEARING_HELMET', 'NO_HELMET', 'UNCERTAIN'].includes(detection?.helmet_status) ? detection.helmet_status : undefined,
+    seatbelt_status: ['SEATBELT_VISIBLE', 'SEATBELT_NOT_VISIBLE', 'UNCERTAIN'].includes(detection?.seatbelt_status) ? detection.seatbelt_status : undefined,
+    timestamp: typeof detection?.timestamp === 'string' ? detection.timestamp : undefined,
+    license_plate: {
+      value: licenseValue,
+      confidence: Number.isFinite(licenseConfidence) ? Math.min(Math.max(licenseConfidence, 0), 1) : 0,
+      status: licenseStatus,
+    },
+    box_2d,
+  };
+}
+
+export function normalizeTrafficSafetyResponse(raw: unknown): any {
+  const parsed = parseResponseJson(raw, 'AI');
+
+  if (!parsed || typeof parsed !== 'object') {
+    throw new ProviderAppError('AI returned an empty or invalid response. Please try again.', 502);
+  }
+
+  const quality = parsed.quality_check && typeof parsed.quality_check === 'object' ? parsed.quality_check : {};
+  const detectionsSource = Array.isArray(parsed.detections) ? parsed.detections : [];
+  const detections = detectionsSource.map((detection: any, index: number) => sanitizeDetection(detection, index));
+
+  const summarySource = parsed.summary && typeof parsed.summary === 'object' ? parsed.summary : {};
+  const riderCountFromDetections = detections.filter((d: any) => d.vehicle_type === 'motorcycle' || d.vehicle_type === 'scooter').length;
+  const totalRidersCandidate = typeof summarySource.total_riders === 'number' ? summarySource.total_riders : riderCountFromDetections;
+  const totalRiders = asInteger(totalRidersCandidate || detections.length, 0);
+
+  const wearingHelmetCandidate = typeof summarySource.wearing_helmet === 'number' ? summarySource.wearing_helmet : detections.filter((d: any) => d.helmet_status === 'WEARING_HELMET').length;
+  const noHelmetCandidate = typeof summarySource.no_helmet === 'number' ? summarySource.no_helmet : detections.filter((d: any) => d.category === 'NO_HELMET' || d.helmet_status === 'NO_HELMET').length;
+
+  const finalAssessmentSource = parsed.final_assessment && typeof parsed.final_assessment === 'object' ? parsed.final_assessment : {};
+  const confirmedViolationsCandidate = typeof finalAssessmentSource.confirmed_violations === 'number' ? finalAssessmentSource.confirmed_violations : detections.filter((d: any) => d.is_violation).length;
+  const potentialIssuesCandidate = typeof finalAssessmentSource.potential_issues === 'number' ? finalAssessmentSource.potential_issues : detections.filter((d: any) => d.is_potential).length;
+  const manualReviewRequired = Boolean(finalAssessmentSource.manual_review_required ?? detections.some((d: any) => d.is_uncertain || d.is_potential));
+
+  const summary = {
+    total_riders: totalRiders,
+    wearing_helmet: asInteger(wearingHelmetCandidate, 0),
+    no_helmet: asInteger(noHelmetCandidate, 0),
+    triple_riding: asInteger(
+      typeof summarySource.triple_riding === 'number' ? summarySource.triple_riding : detections.filter((d: any) => d.category === 'TRIPLE_RIDING').length,
+      0,
+    ),
+    cars_detected: asInteger(
+      typeof summarySource.cars_detected === 'number' ? summarySource.cars_detected : detections.filter((d: any) => d.vehicle_type === 'car').length,
+      0,
+    ),
+    seatbelt_issues: asInteger(
+      typeof summarySource.seatbelt_issues === 'number' ? summarySource.seatbelt_issues : detections.filter((d: any) => d.category === 'POTENTIAL_SEATBELT_ISSUE').length,
+      0,
+    ),
+    occupancy_issues: asInteger(
+      typeof summarySource.occupancy_issues === 'number' ? summarySource.occupancy_issues : detections.filter((d: any) => d.category === 'POTENTIAL_OCCUPANCY_ISSUE').length,
+      0,
+    ),
+    uncertain: asInteger(
+      typeof summarySource.uncertain === 'number' ? summarySource.uncertain : detections.filter((d: any) => d.is_uncertain).length,
+      0,
+    ),
+  };
+
+  const normalized: any = {
+    quality_check: {
+      is_usable: Boolean(quality.is_usable ?? true),
+      message: typeof quality.message === 'string' && quality.message.trim() ? quality.message : 'The selected AI model reviewed the image.',
+    },
+    summary,
+    detections,
+    final_assessment: {
+      confirmed_violations: asInteger(confirmedViolationsCandidate, 0),
+      potential_issues: asInteger(potentialIssuesCandidate, 0),
+      manual_review_required: manualReviewRequired,
+    },
+  };
+
+  const imageAnalysis = parsed.image_analysis && typeof parsed.image_analysis === 'object' ? parsed.image_analysis : {};
+  const finalResult = parsed.final_result && typeof parsed.final_result === 'object' ? parsed.final_result : {};
+
+  if (Object.keys(imageAnalysis).length > 0) {
+    normalized.image_analysis = {
+      total_riders: asInteger(typeof imageAnalysis.total_riders === 'number' ? imageAnalysis.total_riders : summary.total_riders, summary.total_riders),
+      wearing_helmet: asInteger(typeof imageAnalysis.wearing_helmet === 'number' ? imageAnalysis.wearing_helmet : summary.wearing_helmet, summary.wearing_helmet),
+      no_helmet: asInteger(typeof imageAnalysis.no_helmet === 'number' ? imageAnalysis.no_helmet : summary.no_helmet, summary.no_helmet),
+      uncertain: asInteger(typeof imageAnalysis.uncertain === 'number' ? imageAnalysis.uncertain : summary.uncertain, summary.uncertain),
+    };
+  }
+
+  if (Object.keys(finalResult).length > 0) {
+    normalized.final_result = {
+      no_helmet_detected: Boolean(finalResult.no_helmet_detected ?? summary.no_helmet > 0),
+      no_helmet_count: asInteger(typeof finalResult.no_helmet_count === 'number' ? finalResult.no_helmet_count : summary.no_helmet, summary.no_helmet),
+    };
+  }
+
+  return normalized;
+}
+
+function isLikelyVisionModel(modelName: string): boolean {
+  const normalized = modelName.toLowerCase();
+  return /vision|gemma|llava|qwen|pixtral|minicpm|bakllava|mistral|moondream|llama.*vision/i.test(normalized);
+}
+
+export function createApp(options: AppOptions = {}): Express {
   const app = express();
-  const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+  const aiClient = options.aiClient ?? (process.env.GEMINI_API_KEY ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY }) : null);
+  const fetchFn = options.fetchImpl ?? fetch;
 
-  // Accept up to 50MB for high-resolution photo captures
+  app.disable('x-powered-by');
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-  const ai = process.env.GEMINI_API_KEY
-    ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY })
-    : null;
-
-  // Health check endpoint
   app.get('/api/health', (_req, res) => {
     res.json({
       status: 'online',
@@ -32,149 +219,136 @@ async function startServer() {
     });
   });
 
-  // Core Traffic Safety Analysis Logic
-  async function handleTrafficAnalysis(req: express.Request, res: express.Response) {
+  async function analyzeTraffic(req: express.Request, res: express.Response) {
     try {
-      const { image, imageUrl, mimeType = 'image/jpeg', mode = 'cloud' } = req.body;
+      const payload = req.body ?? {};
+      const { image, imageUrl, mimeType, mode = 'cloud' } = payload;
+      const normalizedMode = typeof mode === 'string' ? mode.toLowerCase() : 'cloud';
 
-      if (mode !== 'cloud' && mode !== 'local') {
+      if (normalizedMode !== 'cloud' && normalizedMode !== 'local') {
         return res.status(400).json({ error: 'Invalid AI mode. Choose cloud or local.' });
       }
-      const rawImage = image || imageUrl;
 
-      if (!rawImage) {
+      const rawImage = image ?? imageUrl;
+      if (rawImage === undefined || rawImage === null || (typeof rawImage === 'string' && rawImage.trim().length === 0)) {
         return res.status(400).json({ error: 'Please choose an image to analyze.' });
       }
 
-      let cleanBase64 = rawImage;
-      let detectedMime = mimeType;
+      let cleanBase64 = typeof rawImage === 'string' ? rawImage : '';
+      let detectedMime = normalizeMimeType(mimeType ?? 'image/jpeg');
 
-      // Handle server-side URL fetching to avoid browser CORS restrictions
-      if (typeof rawImage === 'string' && (rawImage.startsWith('http://') || rawImage.startsWith('https://'))) {
+      if (typeof rawImage === 'string' && /^https?:\/\//i.test(rawImage)) {
         try {
-          const fetchRes = await fetch(rawImage);
-          if (!fetchRes.ok) {
-            throw new Error(`Failed to fetch image: ${fetchRes.statusText}`);
+          const fetchResponse = await fetchFn(rawImage);
+          if (!fetchResponse.ok) {
+            throw new ProviderAppError(`Failed to fetch image from the provided URL (${fetchResponse.status}).`, 400);
           }
-          const arrayBuffer = await fetchRes.arrayBuffer();
+          const arrayBuffer = await fetchResponse.arrayBuffer();
           cleanBase64 = Buffer.from(arrayBuffer).toString('base64');
-          detectedMime = fetchRes.headers.get('content-type') || 'image/jpeg';
-        } catch (fetchErr: any) {
-          console.error('Server URL fetch error:', fetchErr);
-          return res.status(400).json({ error: 'Unable to load the image from the provided URL.' });
+          detectedMime = normalizeMimeType(fetchResponse.headers.get('content-type') ?? detectedMime) || 'image/jpeg';
+        } catch (error) {
+          if (error instanceof ProviderAppError) {
+            throw error;
+          }
+          throw new ProviderAppError('Unable to load the image from the provided URL.', 400);
         }
       } else if (typeof rawImage === 'string' && rawImage.startsWith('data:')) {
-        const matches = rawImage.match(/^data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+);base64,(.+)$/);
-        if (matches) {
-          detectedMime = matches[1];
-          cleanBase64 = matches[2];
+        const match = rawImage.match(/^data:([^;,]+);base64,(.+)$/i);
+        if (match) {
+          detectedMime = normalizeMimeType(match[1]) || detectedMime;
+          cleanBase64 = match[2] ?? '';
         } else {
           cleanBase64 = rawImage.replace(/^data:[^;]+;base64,/, '');
         }
       }
 
-      if (!detectedMime.startsWith('image/')) {
+      if (!detectedMime || !detectedMime.startsWith('image/')) {
         return res.status(415).json({ error: 'Unsupported image type. Please upload a valid image.' });
       }
-      if (!cleanBase64 || cleanBase64.length > 35_000_000) {
+      if (!ACCEPTED_IMAGE_MIME_TYPES.has(detectedMime)) {
+        return res.status(415).json({ error: `Unsupported image type: ${detectedMime}. Please upload JPEG, PNG, WebP, or BMP.` });
+      }
+
+      const actualImageBytes = Buffer.byteLength(cleanBase64, 'base64');
+      if (actualImageBytes < 1 || actualImageBytes > MAX_IMAGE_BYTES) {
         return res.status(413).json({ error: 'Image payload is empty or too large. Please use an image under 25 MB.' });
       }
 
-      // Exhaustive multi-target scanning prompt
-      const promptText = `You are a high-precision Municipal Traffic Safety AI.
-Exhaustively scan the ENTIRE scene and detect EVERY SINGLE person and vehicle present.
+      const promptText = `You are a high-precision Municipal Traffic Safety AI. Carefully inspect the provided image and return only a valid JSON object matching the expected traffic-safety contract. Do not invent facts. If the scene is unclear, mark the result as uncertain and require manual review. Return a strong summary plus detection entries with a valid bounding box only when one is visible and reliable.`;
 
-MANDATORY RULES:
-1. EXHAUSTIVE MULTI-PERSON DETECTION:
-   - Do NOT stop after detecting 1 or 2 persons.
-   - Scan left-to-right, foreground, midground, and background.
-   - Detect EVERY motorcycle driver, EVERY scooter driver, and EVERY pillion/passenger.
-   - Also detect cars, vans, and auto-rickshaws if visible.
+      let providerText: string | null = null;
 
-2. HELMET CLASSIFICATION FOR EACH PERSON:
-   - If head or hair is visible without a certified helmet:
-     category = "NO_HELMET", is_violation = true, helmet_status = "NO_HELMET"
-   - If helmet is worn:
-     category = "NO_CONFIRMED_VIOLATION", is_violation = false, helmet_status = "WEARING_HELMET"
-   - If head is obscured or distant:
-     category = "UNCERTAIN", is_uncertain = true, helmet_status = "UNCERTAIN"
-
-3. MULTIPLE OCCUPANTS / TRIPLE RIDING:
-   - If 3 or more people are on one two-wheeler: category = "TRIPLE_RIDING", is_violation = true.
-
-4. PRECISE BOUNDING BOX (box_2d):
-   - Provide [ymin, xmin, ymax, xmax] coordinates on 0-1000 scale tightly surrounding each target.
-   - Ensure the box covers the rider/person and their vehicle portion accurately.
-
-5. LICENSE PLATE:
-   - Attempt to read visible license plates for the vehicles. If unclear, set status: "NOT_READABLE", value: "NOT_READABLE".`;
-
-      let lastError: any = null;
-      let response: any = null;
-
-      if (mode === 'local') {
+      if (normalizedMode === 'local') {
         const ollamaBaseUrl = (process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434').replace(/\/$/, '');
         const ollamaModel = process.env.OLLAMA_MODEL || 'gemma3:12b';
-        let ollamaResponse: Response;
+        const timeoutMs = Number(process.env.OLLAMA_TIMEOUT_MS || 120000);
+
+        if (!isLikelyVisionModel(ollamaModel)) {
+          throw new ProviderAppError(`Configured Ollama model '${ollamaModel}' may not support image input. Use a vision-capable model such as gemma3:12b.`, 400);
+        }
+
         try {
-          ollamaResponse = await fetch(`${ollamaBaseUrl}/api/chat`, {
+          const response = await fetchFn(`${ollamaBaseUrl}/api/chat`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            signal: AbortSignal.timeout(Number(process.env.OLLAMA_TIMEOUT_MS || 120000)),
+            signal: AbortSignal.timeout(timeoutMs),
             body: JSON.stringify({
               model: ollamaModel,
               stream: false,
               format: 'json',
-              messages: [{
-                role: 'user',
-                content: `${promptText}\n\nReturn one JSON object with keys quality_check, summary, detections, and final_assessment. Each detection should include id, vehicle_type, target_label, category, is_violation, is_potential, is_uncertain, confidence from 0 to 1, confidence_level (High/Medium/Low), evidence, box_2d as [ymin, xmin, ymax, xmax] on a 0-1000 scale when visible, occupants_count when visible, helmet_status, and license_plate with value, confidence, and status. Use only the category and status values listed above. Do not invent details; mark unclear observations UNCERTAIN. AI output is not legal proof.`,
-                images: [cleanBase64],
-              }],
+              messages: [
+                {
+                  role: 'user',
+                  content: `${promptText} Return one JSON object with keys quality_check, summary, detections, and final_assessment. Each detection should include id, vehicle_type, target_label, category, is_violation, is_potential, is_uncertain, confidence, confidence_level, evidence, box_2d when visible, occupants_count when visible, helmet_status, and license_plate. Use only the provided category and status values. Never fabricate bounding boxes or detection details.`,
+                  images: [cleanBase64],
+                },
+              ],
               options: { temperature: 0.1 },
             }),
           });
-        } catch (error: any) {
-          const timedOut = error?.name === 'TimeoutError';
-          return res.status(503).json({ error: timedOut
-            ? 'Local AI timed out. Try a smaller image or increase OLLAMA_TIMEOUT_MS.'
-            : 'Cannot connect to Ollama. Start Ollama and confirm the local model is available. No cloud fallback was attempted.' });
-        }
-        if (ollamaResponse.status === 404) {
-          return res.status(503).json({ error: `Ollama model '${ollamaModel}' was not found. Pull it with: ollama pull ${ollamaModel}` });
-        }
-        if (!ollamaResponse.ok) {
-          return res.status(502).json({ error: `Ollama returned an error (${ollamaResponse.status}). Check the Ollama server logs.` });
-        }
-        const localPayload: any = await ollamaResponse.json().catch(() => null);
-        const localText = localPayload?.message?.content;
-        if (typeof localText !== 'string' || !localText.trim()) {
-          return res.status(502).json({ error: 'Ollama returned an empty or invalid response. No cloud fallback was attempted.' });
-        }
-        response = { text: localText };
-      } else if (!ai) {
-        return res.status(503).json({ error: 'Gemini Cloud Mode is not configured. Add GEMINI_API_KEY or select Local Mode.' });
-      }
 
-      // Models to try in priority order: gemini-3.1-flash-lite is responsive and fast; fallback to gemini-3.8-flash
-      const candidateModels = ['gemini-3.1-flash-lite', 'gemini-3.8-flash'];
+          if (response.status === 404) {
+            throw new ProviderAppError(`Ollama model '${ollamaModel}' was not found. Pull it with: ollama pull ${ollamaModel}`, 503);
+          }
+          if (!response.ok) {
+            throw new ProviderAppError(`Ollama returned an error (${response.status}). Check the Ollama server logs.`, 502);
+          }
 
-      if (mode === 'cloud') {
+          const payload = await response.json().catch(() => null);
+          const content = payload?.message?.content;
+          if (typeof content !== 'string' || !content.trim()) {
+            throw new ProviderAppError('Ollama returned an empty or invalid response. No cloud fallback was attempted.', 502);
+          }
+          providerText = content;
+        } catch (error) {
+          if (error instanceof ProviderAppError) {
+            throw error;
+          }
+          const timedOut = error instanceof Error && error.name === 'TimeoutError';
+          throw new ProviderAppError(
+            timedOut
+              ? 'Local AI timed out. Try a smaller image or increase OLLAMA_TIMEOUT_MS.'
+              : 'Cannot connect to Ollama. Start Ollama and confirm the local model is available. No cloud fallback was attempted.',
+            503,
+          );
+        }
+      } else {
+        if (!aiClient) {
+          throw new ProviderAppError('Gemini Cloud Mode is not configured. Add GEMINI_API_KEY or select Local Mode.', 503);
+        }
+
+        const candidateModels = ['gemini-2.5-flash', 'gemini-2.0-flash'];
+        let lastError: Error | null = null;
+
         for (const modelName of candidateModels) {
           try {
-            response = await ai!.models.generateContent({
+            const response = await aiClient.models.generateContent({
               model: modelName,
               contents: [
                 {
                   parts: [
-                    {
-                      inlineData: {
-                        mimeType: detectedMime,
-                        data: cleanBase64,
-                      },
-                    },
-                    {
-                      text: promptText,
-                    },
+                    { inlineData: { mimeType: detectedMime, data: cleanBase64 } },
+                    { text: promptText },
                   ],
                 },
               ],
@@ -203,16 +377,7 @@ MANDATORY RULES:
                         occupancy_issues: { type: Type.INTEGER },
                         uncertain: { type: Type.INTEGER },
                       },
-                      required: [
-                        'total_riders',
-                        'wearing_helmet',
-                        'no_helmet',
-                        'triple_riding',
-                        'cars_detected',
-                        'seatbelt_issues',
-                        'occupancy_issues',
-                        'uncertain',
-                      ],
+                      required: ['total_riders', 'wearing_helmet', 'no_helmet', 'triple_riding', 'cars_detected', 'seatbelt_issues', 'occupancy_issues', 'uncertain'],
                     },
                     detections: {
                       type: Type.ARRAY,
@@ -220,49 +385,24 @@ MANDATORY RULES:
                         type: Type.OBJECT,
                         properties: {
                           id: { type: Type.INTEGER },
-                          vehicle_type: {
-                            type: Type.STRING,
-                            enum: ['motorcycle', 'scooter', 'car', 'other'],
-                          },
+                          vehicle_type: { type: Type.STRING },
                           target_label: { type: Type.STRING },
-                          category: {
-                            type: Type.STRING,
-                            enum: [
-                              'NO_HELMET',
-                              'TRIPLE_RIDING',
-                              'POTENTIAL_SEATBELT_ISSUE',
-                              'POTENTIAL_OCCUPANCY_ISSUE',
-                              'UNCERTAIN',
-                              'NO_CONFIRMED_VIOLATION',
-                            ],
-                          },
+                          category: { type: Type.STRING },
                           is_violation: { type: Type.BOOLEAN },
                           is_potential: { type: Type.BOOLEAN },
                           is_uncertain: { type: Type.BOOLEAN },
                           confidence: { type: Type.NUMBER },
-                          confidence_level: {
-                            type: Type.STRING,
-                            enum: ['High', 'Medium', 'Low'],
-                          },
+                          confidence_level: { type: Type.STRING },
                           evidence: { type: Type.STRING },
                           occupants_count: { type: Type.INTEGER },
-                          helmet_status: {
-                            type: Type.STRING,
-                            enum: ['WEARING_HELMET', 'NO_HELMET', 'UNCERTAIN'],
-                          },
-                          seatbelt_status: {
-                            type: Type.STRING,
-                            enum: ['SEATBELT_VISIBLE', 'SEATBELT_NOT_VISIBLE', 'UNCERTAIN'],
-                          },
+                          helmet_status: { type: Type.STRING },
+                          seatbelt_status: { type: Type.STRING },
                           license_plate: {
                             type: Type.OBJECT,
                             properties: {
                               value: { type: Type.STRING },
                               confidence: { type: Type.NUMBER },
-                              status: {
-                                type: Type.STRING,
-                                enum: ['READABLE', 'PARTIAL', 'NOT_READABLE'],
-                              },
+                              status: { type: Type.STRING },
                             },
                             required: ['value', 'confidence', 'status'],
                           },
@@ -270,21 +410,9 @@ MANDATORY RULES:
                           box_2d: {
                             type: Type.ARRAY,
                             items: { type: Type.NUMBER },
-                            description: '[ymin, xmin, ymax, xmax] 0-1000',
                           },
                         },
-                        required: [
-                          'id',
-                          'vehicle_type',
-                          'target_label',
-                          'category',
-                          'is_violation',
-                          'is_potential',
-                          'is_uncertain',
-                          'confidence',
-                          'confidence_level',
-                          'evidence',
-                        ],
+                        required: ['id', 'vehicle_type', 'target_label', 'category', 'is_violation', 'is_potential', 'is_uncertain', 'confidence', 'confidence_level', 'evidence'],
                       },
                     },
                     final_assessment: {
@@ -301,109 +429,71 @@ MANDATORY RULES:
                 },
               },
             });
-  
-            if (response && response.text) {
+
+            if (typeof response?.text === 'string' && response.text.trim()) {
+              providerText = response.text;
               break;
             }
-          } catch (err: any) {
-            lastError = err;
-            console.warn(`Model ${modelName} attempt failed:`, err?.message || err);
+          } catch (error) {
+            lastError = error instanceof Error ? error : new Error(String(error));
           }
         }
-  
-      }
-      if (!response || !response.text) {
-        throw lastError || new Error('No response returned from AI model.');
-      }
 
-      let parsedData: any;
-      try {
-        parsedData = JSON.parse(response.text);
-      } catch (jsonErr) {
-        console.error('Failed to parse Gemini response as JSON:', response.text);
-        throw new Error('AI returned an unexpected format. Please try again.');
+        if (!providerText) {
+          throw lastError ?? new ProviderAppError('No response returned from Gemini.', 502);
+        }
       }
 
-      // Ensure detections is an array and IDs are numbered 1..N
-      if (!Array.isArray(parsedData.detections)) {
-        parsedData.detections = [];
-      } else {
-        parsedData.detections = parsedData.detections.map((d: any, idx: number) => ({
-          ...d,
-          id: idx + 1,
-          // Do not invent a bounding box when the model did not return one.
-          box_2d: Array.isArray(d.box_2d) && d.box_2d.length === 4 ? d.box_2d : undefined,
-        }));
+      if (!providerText || !providerText.trim()) {
+        throw new ProviderAppError('AI returned an empty response. Please try again.', 502);
       }
 
-      // Compute consistent assessment
-      const confirmedCount = parsedData.detections.filter((d: any) => d.is_violation).length;
-      const potentialCount = parsedData.detections.filter((d: any) => d.is_potential).length;
-      const noHelmetCount = parsedData.detections.filter((d: any) => d.category === 'NO_HELMET' || d.helmet_status === 'NO_HELMET').length;
-      const wearingHelmetCount = parsedData.detections.filter((d: any) => d.helmet_status === 'WEARING_HELMET').length;
-      const totalRidersCount = parsedData.detections.filter((d: any) => d.vehicle_type === 'motorcycle' || d.vehicle_type === 'scooter').length || parsedData.detections.length;
-
-      parsedData.summary = {
-        total_riders: totalRidersCount,
-        wearing_helmet: wearingHelmetCount,
-        no_helmet: noHelmetCount,
-        triple_riding: parsedData.detections.filter((d: any) => d.category === 'TRIPLE_RIDING').length,
-        cars_detected: parsedData.detections.filter((d: any) => d.vehicle_type === 'car').length,
-        seatbelt_issues: parsedData.detections.filter((d: any) => d.category === 'POTENTIAL_SEATBELT_ISSUE').length,
-        occupancy_issues: parsedData.detections.filter((d: any) => d.category === 'POTENTIAL_OCCUPANCY_ISSUE').length,
-        uncertain: parsedData.detections.filter((d: any) => d.is_uncertain).length,
-      };
-
-      parsedData.final_assessment = {
-        confirmed_violations: confirmedCount,
-        potential_issues: potentialCount,
-        manual_review_required: parsedData.detections.some((d: any) => d.is_uncertain || d.is_potential),
-      };
-
-      parsedData.image_analysis = {
-        total_riders: totalRidersCount,
-        wearing_helmet: wearingHelmetCount,
-        no_helmet: noHelmetCount,
-        uncertain: parsedData.summary.uncertain,
-      };
-      parsedData.final_result = {
-        no_helmet_detected: noHelmetCount > 0,
-        no_helmet_count: noHelmetCount,
-      };
-
+      const parsedData = normalizeTrafficSafetyResponse(providerText);
       return res.json(parsedData);
-    } catch (error: any) {
-      console.error('Error analyzing traffic safety image:', error);
-      // Never turn provider failures into fabricated detections.
-      const message = 'Analysis failed. Check the selected provider configuration and try again. Local Mode never falls back to Gemini.';
+    } catch (error) {
+      if (error instanceof ProviderAppError) {
+        return res.status(error.statusCode).json({ error: error.message });
+      }
+
+      const message = error instanceof Error && error.message ? error.message : 'Analysis failed. Check the selected provider configuration and try again.';
       return res.status(502).json({ error: message });
     }
   }
 
-  // Endpoints: dedicated image & live camera capture analysis
-  app.post('/api/analyze-traffic', handleTrafficAnalysis);
-  app.post('/api/analyze-helmet', handleTrafficAnalysis);
+  app.post('/api/analyze-traffic', analyzeTraffic);
+  app.post('/api/analyze-helmet', analyzeTraffic);
 
-  // Setup Vite middleware in dev or static serving in production
   if (process.env.NODE_ENV === 'production') {
     app.use(express.static(path.resolve(__dirname, 'dist')));
     app.get('*', (_req, res) => {
       res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
     });
-  } else {
+  }
+
+  return app;
+}
+
+export async function startServer(portInput?: number): Promise<import('http').Server> {
+  const port = Number.isFinite(portInput) ? (portInput as number) : Number(process.env.PORT) || 3000;
+  const app = createApp();
+
+  if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: {
-        middlewareMode: true,
-        hmr: false,
-      },
+      server: { middlewareMode: true, hmr: false },
       appType: 'spa',
     });
     app.use(vite.middlewares);
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`AI Vision Server running on http://0.0.0.0:${PORT}`);
+  return new Promise((resolve) => {
+    const server = app.listen(port, '0.0.0.0', () => {
+      console.log(`AI Vision Server running on http://0.0.0.0:${port}`);
+      resolve(server);
+    });
   });
 }
 
-startServer();
+const isDirectExecution = process.argv[1] ? import.meta.url === pathToFileURL(process.argv[1]).href : false;
+if (isDirectExecution) {
+  void startServer();
+}
