@@ -63,11 +63,40 @@ export const UploadSection: React.FC<UploadSectionProps> = ({
       return;
     }
 
-    // Process image to base64
+    // Process image with client-side scaling to prevent payload timeouts or memory errors
     const reader = new FileReader();
     reader.onload = (e) => {
-      const base64 = e.target?.result as string;
-      onImageSelected(base64);
+      const rawBase64 = e.target?.result as string;
+      const img = new Image();
+      img.onload = () => {
+        const MAX_DIM = 1600;
+        let width = img.width;
+        let height = img.height;
+
+        if (width > MAX_DIM || height > MAX_DIM) {
+          if (width > height) {
+            height = Math.round((height * MAX_DIM) / width);
+            width = MAX_DIM;
+          } else {
+            width = Math.round((width * MAX_DIM) / height);
+            height = MAX_DIM;
+          }
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, width, height);
+          const scaledBase64 = canvas.toDataURL('image/jpeg', 0.88);
+          onImageSelected(scaledBase64);
+        } else {
+          onImageSelected(rawBase64);
+        }
+      };
+      img.onerror = () => onImageSelected(rawBase64);
+      img.src = rawBase64;
     };
     reader.onerror = () => {
       setErrorMsg('Failed to read the image file.');

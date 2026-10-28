@@ -9,6 +9,7 @@ import { PresetScenariosTab } from './components/PresetScenariosTab';
 import { CitationReportModal } from './components/CitationReportModal';
 import { CameraCaptureModal } from './components/CameraCaptureModal';
 import { EnforcementChallanHub } from './components/EnforcementChallanHub';
+import { FlutterMobileNav } from './components/FlutterMobileNav';
 import { SAMPLE_SCENARIOS } from './data/sampleScenarios';
 import { TrafficSafetyResponse, TrafficDetection, SampleScenario } from './types/helmet';
 import { exportViolationsToCSV } from './utils/csvExport';
@@ -190,8 +191,8 @@ export default function App() {
           }
         />
 
-        {/* Workspace Body */}
-        <main className="flex-1 p-4 lg:p-8 space-y-6 max-w-7xl mx-auto w-full">
+        {/* Workspace Body (with bottom padding for Flutter mobile nav bar) */}
+        <main className="flex-1 p-3.5 sm:p-4 lg:p-8 space-y-5 sm:space-y-6 max-w-7xl mx-auto w-full pb-24 lg:pb-8">
           {/* Error Banner */}
           {errorMessage && (
             <div className="p-4 bg-rose-50 border border-rose-200 rounded-2xl flex items-center justify-between text-rose-800 text-xs">
@@ -282,6 +283,15 @@ export default function App() {
           )}
         </main>
       </div>
+
+      {/* Flutter Material 3 Mobile Navigation Bar with Centered FAB */}
+      <FlutterMobileNav
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
+        onCameraClick={() => setCameraDirectOpen(true)}
+        onUploadClick={() => setShowUploadPanel((prev) => !prev)}
+        violationCount={violationCount}
+      />
 
       {/* Citation Report Modal */}
       <CitationReportModal

@@ -87,16 +87,16 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
       </div>
 
       {/* Right: Primary Fast Actions */}
-      <div className="flex items-center gap-2 sm:gap-2.5">
+      <div className="flex items-center gap-1.5 sm:gap-2.5">
         {/* Fast Action 1: Live Camera Snapshot */}
         {onCameraClick && (
           <button
             onClick={onCameraClick}
             disabled={isLoading}
-            className="px-3 py-2 bg-white hover:bg-[#EBE6DC] border border-[#CDC5B5] text-[#1C1917] rounded-xl text-xs font-bold transition-all shadow-2xs flex items-center gap-1.5"
+            className="p-2 sm:px-3 sm:py-2 bg-white hover:bg-[#EBE6DC] border border-[#CDC5B5] text-[#1C1917] rounded-xl text-xs font-bold transition-all shadow-2xs flex items-center gap-1.5"
             title="Snap photo with device camera"
           >
-            <Camera className="w-3.5 h-3.5 text-[#0D9488]" />
+            <Camera className="w-4 h-4 text-[#0D9488]" />
             <span className="hidden sm:inline">Camera</span>
           </button>
         )}
@@ -105,20 +105,21 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
         <button
           onClick={onUploadClick}
           disabled={isLoading}
-          className="px-3.5 py-2 bg-[#EBE6DC] hover:bg-[#E2DDD3] text-[#1C1917] rounded-xl text-xs font-bold transition-all shadow-2xs flex items-center gap-1.5"
+          className="p-2 sm:px-3.5 sm:py-2 bg-[#EBE6DC] hover:bg-[#E2DDD3] text-[#1C1917] rounded-xl text-xs font-bold transition-all shadow-2xs flex items-center gap-1.5"
+          title="Upload Photo"
         >
-          <UploadCloud className="w-3.5 h-3.5 text-[#57534E]" />
-          <span>Upload Photo</span>
+          <UploadCloud className="w-4 h-4 text-[#57534E]" />
+          <span className="hidden sm:inline">Upload Photo</span>
         </button>
 
         {/* Fast Action 3: Export CSV */}
         {onExportBatchCSV && (
           <button
             onClick={onExportBatchCSV}
-            className="p-2 bg-white hover:bg-[#EBE6DC] border border-[#CDC5B5] text-[#1C1917] rounded-xl text-xs font-medium transition-colors"
+            className="p-2 bg-white hover:bg-[#EBE6DC] border border-[#CDC5B5] text-[#1C1917] rounded-xl text-xs font-medium transition-colors hidden sm:flex items-center"
             title="Export CSV Audit"
           >
-            <Download className="w-3.5 h-3.5 text-[#57534E]" />
+            <Download className="w-4 h-4 text-[#57534E]" />
           </button>
         )}
 
@@ -126,9 +127,10 @@ export const TopNavbar: React.FC<TopNavbarProps> = ({
         {hasViolation && (
           <button
             onClick={onGenerateCitationClick}
-            className="px-3 py-2 bg-rose-700 hover:bg-rose-800 text-white rounded-xl text-xs font-bold transition-all shadow-2xs flex items-center gap-1.5"
+            className="p-2 sm:px-3 sm:py-2 bg-rose-700 hover:bg-rose-800 text-white rounded-xl text-xs font-bold transition-all shadow-2xs flex items-center gap-1.5"
+            title="Issue Challan"
           >
-            <FileText className="w-3.5 h-3.5" />
+            <FileText className="w-4 h-4" />
             <span className="hidden md:inline">Issue Challan</span>
           </button>
         )}

@@ -12,6 +12,82 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <script>
+      (function() {
+        // Intercept Vite development HMR WebSockets in AI Studio iframe environment
+        var OrigWS = window.WebSocket;
+        if (OrigWS) {
+          window.WebSocket = function(url, protocols) {
+            var urlStr = String(url || '');
+            // Only intercept local development HMR sockets, leaving normal WebSockets untouched
+            if (urlStr.indexOf('token=') !== -1 || urlStr.indexOf('vite') !== -1 || urlStr.indexOf('localhost') !== -1 || urlStr.indexOf('ais-') !== -1) {
+              var fake = {
+                binaryType: 'blob',
+                bufferedAmount: 0,
+                extensions: '',
+                protocol: '',
+                readyState: 1, // OPEN
+                url: urlStr,
+                onopen: null,
+                onclose: null,
+                onerror: null,
+                onmessage: null,
+                send: function() {},
+                close: function() {},
+                addEventListener: function(event, handler, options) {
+                  if (event === 'open') {
+                    setTimeout(function() {
+                      try { handler.call(fake, new Event('open')); } catch(e) {}
+                    }, 0);
+                  }
+                },
+                removeEventListener: function() {},
+                dispatchEvent: function() { return true; }
+              };
+              setTimeout(function() {
+                if (typeof fake.onopen === 'function') {
+                  try { fake.onopen(new Event('open')); } catch(e) {}
+                }
+              }, 0);
+              return fake;
+            }
+            return new OrigWS(url, protocols);
+          };
+          window.WebSocket.prototype = OrigWS.prototype;
+          window.WebSocket.CONNECTING = 0;
+          window.WebSocket.OPEN = 1;
+          window.WebSocket.CLOSING = 2;
+          window.WebSocket.CLOSED = 3;
+        }
+
+        // Suppress any remaining console error and unhandled rejection notices regarding WebSocket
+        window.addEventListener('unhandledrejection', function(e) {
+          var msg = (e && e.reason && (e.reason.message || e.reason.stack)) || String(e && e.reason || '');
+          if (msg.indexOf('WebSocket') !== -1 || msg.indexOf('closed without opened') !== -1) {
+            e.preventDefault && e.preventDefault();
+            e.stopImmediatePropagation && e.stopImmediatePropagation();
+          }
+        }, true);
+
+        window.addEventListener('error', function(e) {
+          var msg = (e && (e.message || (e.error && e.error.message))) || '';
+          if (msg.indexOf('WebSocket') !== -1 || msg.indexOf('closed without opened') !== -1) {
+            e.preventDefault && e.preventDefault();
+            e.stopImmediatePropagation && e.stopImmediatePropagation();
+          }
+        }, true);
+
+        var origConsoleError = console.error;
+        console.error = function() {
+          var args = Array.prototype.slice.call(arguments);
+          var joined = args.map(function(a) { return String(a && a.message || a); }).join(' ');
+          if (joined.indexOf('failed to connect to websocket') !== -1 || joined.indexOf('WebSocket closed without opened') !== -1) {
+            return;
+          }
+          return origConsoleError.apply(console, arguments);
+        };
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

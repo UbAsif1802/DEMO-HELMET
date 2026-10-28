@@ -60,11 +60,11 @@ export const SummaryCards: React.FC<SummaryCardsProps> = ({
         </div>
       )}
 
-      {/* Main KPI Strip */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+      {/* Main KPI Strip - Horizontal snap carousel on mobile, grid on tablets/desktop */}
+      <div className="flex overflow-x-auto pb-2 -mx-4 px-4 sm:mx-0 sm:px-0 sm:pb-0 sm:grid sm:grid-cols-3 lg:grid-cols-6 gap-2.5 sm:gap-3 snap-x no-scrollbar">
         {/* 1. Confirmed Violations */}
         <div
-          className={`border rounded-xl p-3.5 transition-all shadow-xs ${
+          className={`border rounded-xl p-3 sm:p-3.5 transition-all shadow-xs shrink-0 w-[155px] sm:w-auto snap-start ${
             hasConfirmedViolations
               ? 'bg-rose-50/80 border-rose-300 text-rose-950'
               : 'bg-[#FAF8F4] border-[#E2DDD3] text-[#1C1917]'
@@ -88,7 +88,7 @@ export const SummaryCards: React.FC<SummaryCardsProps> = ({
 
         {/* 2. Potential / Review Required */}
         <div
-          className={`border rounded-xl p-3.5 transition-all shadow-xs ${
+          className={`border rounded-xl p-3 sm:p-3.5 transition-all shadow-xs shrink-0 w-[155px] sm:w-auto snap-start ${
             hasPotentialIssues
               ? 'bg-amber-50/80 border-amber-300 text-amber-950'
               : 'bg-[#FAF8F4] border-[#E2DDD3] text-[#1C1917]'
@@ -112,7 +112,7 @@ export const SummaryCards: React.FC<SummaryCardsProps> = ({
         </div>
 
         {/* 3. Total Riders Monitored */}
-        <div className="bg-[#FAF8F4] border border-[#E2DDD3] rounded-xl p-3.5 shadow-xs">
+        <div className="bg-[#FAF8F4] border border-[#E2DDD3] rounded-xl p-3 sm:p-3.5 shadow-xs shrink-0 w-[155px] sm:w-auto snap-start">
           <div className="flex items-center justify-between text-xs mb-1">
             <span className="font-mono text-[11px] uppercase tracking-wider text-[#57534E]">
               Two-Wheeler Riders
@@ -128,7 +128,7 @@ export const SummaryCards: React.FC<SummaryCardsProps> = ({
         </div>
 
         {/* 4. Excessive Occupancy */}
-        <div className="bg-[#FAF8F4] border border-[#E2DDD3] rounded-xl p-3.5 shadow-xs">
+        <div className="bg-[#FAF8F4] border border-[#E2DDD3] rounded-xl p-3 sm:p-3.5 shadow-xs shrink-0 w-[155px] sm:w-auto snap-start">
           <div className="flex items-center justify-between text-xs mb-1">
             <span className="font-mono text-[11px] uppercase tracking-wider text-[#57534E]">
               Triple Riding
@@ -144,7 +144,7 @@ export const SummaryCards: React.FC<SummaryCardsProps> = ({
         </div>
 
         {/* 5. Passenger Vehicles */}
-        <div className="bg-[#FAF8F4] border border-[#E2DDD3] rounded-xl p-3.5 shadow-xs">
+        <div className="bg-[#FAF8F4] border border-[#E2DDD3] rounded-xl p-3 sm:p-3.5 shadow-xs shrink-0 w-[155px] sm:w-auto snap-start">
           <div className="flex items-center justify-between text-xs mb-1">
             <span className="font-mono text-[11px] uppercase tracking-wider text-[#57534E]">
               Vehicles / Cars
@@ -160,7 +160,7 @@ export const SummaryCards: React.FC<SummaryCardsProps> = ({
         </div>
 
         {/* 6. Corridor Safety Rate */}
-        <div className="bg-[#FAF8F4] border border-[#E2DDD3] rounded-xl p-3.5 shadow-xs">
+        <div className="bg-[#FAF8F4] border border-[#E2DDD3] rounded-xl p-3 sm:p-3.5 shadow-xs shrink-0 w-[155px] sm:w-auto snap-start">
           <div className="flex items-center justify-between text-xs mb-1">
             <span className="font-mono text-[11px] uppercase tracking-wider text-[#57534E]">
               Compliance Rate
