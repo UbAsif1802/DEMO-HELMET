@@ -113,7 +113,7 @@ MANDATORY RULES:
       let response: any = null;
 
       if (mode === 'local') {
-        const ollamaBaseUrl = (process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434').replace(/\\/$/, '');
+        const ollamaBaseUrl = (process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434').replace(/\/$/, '');
         const ollamaModel = process.env.OLLAMA_MODEL || 'gemma3:12b';
         let ollamaResponse: Response;
         try {
@@ -127,7 +127,7 @@ MANDATORY RULES:
               format: 'json',
               messages: [{
                 role: 'user',
-                content: `${promptText}\n\nReturn only a JSON object with this shape: {\\"quality_check\\":{\\"is_usable\\":boolean,\\"message\\":string},\\"summary\\":{\\"total_riders\\":number,\\"wearing_helmet\\":number,\\"no_helmet\\":number,\\"triple_riding\\":number,\\"cars_detected\\":number,\\"seatbelt_issues\\":number,\\"occupancy_issues\\":number,\\"uncertain\\":number},\\"detections\\":[{\\"id\\":number,\\"vehicle_type\\":\\"motorcycle\\"|\\"scooter\\"|\\"car\\"|\\"other\\",\\"target_label\\":string,\\"category\\":\\"NO_HELMET\\"|\\"TRIPLE_RIDING\\"|\\"POTENTIAL_SEATBELT_ISSUE\\"|\\"POTENTIAL_OCCUPANCY_ISSUE\\"|\\"UNCERTAIN\\"|\\"NO_CONFIRMED_VIOLATION\\",\\"is_violation\\":boolean,\\"is_potential\\":boolean,\\"is_uncertain\\":boolean,\\"confidence\\":number,\\"confidence_level\\":\\"High\\"|\\"Medium\\"|\\"Low\\",\\"evidence\\":string,\\"occupants_count\\":number,\\"helmet_status\\":\\"WEARING_HELMET\\"|\\"NO_HELMET\\"|\\"UNCERTAIN\\",\\"license_plate\\":{\\"value\\":string,\\"confidence\\":number,\\"status\\":\\"READABLE\\"|\\"PARTIAL\\"|\\"NOT_READABLE\\"}}],\\"final_assessment\\":{\\"confirmed_violations\\":number,\\"potential_issues\\":number,\\"manual_review_required\\":boolean}}. Do not invent details. If uncertain, mark UNCERTAIN. A model assessment is not legal proof.`,
+                content: `${promptText}\n\nReturn one JSON object with keys quality_check, summary, detections, and final_assessment. Each detection should include id, vehicle_type, target_label, category, is_violation, is_potential, is_uncertain, confidence from 0 to 1, confidence_level (High/Medium/Low), evidence, occupants_count when visible, helmet_status, and license_plate with value, confidence, and status. Use only the category and status values listed above. Do not invent details; mark unclear observations UNCERTAIN. AI output is not legal proof.`,
                 images: [cleanBase64],
               }],
               options: { temperature: 0.1 },
