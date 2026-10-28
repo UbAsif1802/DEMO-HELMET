@@ -65,15 +65,10 @@ export default function App() {
       }
     } catch (err: any) {
       console.warn('Analysis error:', err);
-      if (sampleFallback && activeScenarioId === sampleFallback.id) {
-        setDetectionData(sampleFallback.mockResult);
-        const firstIssue = sampleFallback.mockResult.detections?.find((d) => d.is_violation || d.is_potential);
-        if (firstIssue) {
-          setSelectedDetectionId(firstIssue.id);
-        }
-      } else {
-        setErrorMessage(err.message || 'Unable to analyze this image. Please try again.');
-      }
+      // Never replace a failed live analysis with demo/mock detections.
+      setDetectionData(null);
+      setSelectedDetectionId(null);
+      setErrorMessage(err.message || 'Unable to analyze this image. Please try again.');
     } finally {
       setIsLoading(false);
     }
