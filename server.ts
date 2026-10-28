@@ -18,9 +18,9 @@ async function startServer() {
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-  const ai = new GoogleGenAI({
-    apiKey: process.env.GEMINI_API_KEY,
-  });
+  const ai = process.env.GEMINI_API_KEY
+    ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY })
+    : null;
 
   // Health check endpoint
   app.get('/api/health', (_req, res) => {
@@ -32,156 +32,18 @@ async function startServer() {
     });
   });
 
-  // Helper to construct a comprehensive fallback if the API key is completely absent or hits rate limits
-  function generateFallbackResult(reason: string) {
-    return {
-      quality_check: {
-        is_usable: true,
-        message: `Corridor scanned using Multi-Target Optical Engine (${reason}).`,
-      },
-      summary: {
-        total_riders: 5,
-        wearing_helmet: 1,
-        no_helmet: 4,
-        triple_riding: 0,
-        cars_detected: 2,
-        seatbelt_issues: 0,
-        occupancy_issues: 0,
-        uncertain: 0,
-      },
-      detections: [
-        {
-          id: 1,
-          vehicle_type: 'motorcycle',
-          target_label: 'Target 1 (Center Driver)',
-          category: 'NO_HELMET',
-          is_violation: true,
-          is_potential: false,
-          is_uncertain: false,
-          confidence: 0.98,
-          confidence_level: 'High',
-          evidence: 'Driver cranial area clearly visible with exposed hair; zero helmet structure present.',
-          occupants_count: 2,
-          helmet_status: 'NO_HELMET',
-          license_plate: {
-            value: 'MH-04-ED-5521',
-            confidence: 0.92,
-            status: 'READABLE',
-          },
-          timestamp: 'CAM-04 · Center',
-          box_2d: [480, 320, 870, 440],
-        },
-        {
-          id: 2,
-          vehicle_type: 'motorcycle',
-          target_label: 'Target 2 (Center Pillion)',
-          category: 'NO_CONFIRMED_VIOLATION',
-          is_violation: false,
-          is_potential: false,
-          is_uncertain: false,
-          confidence: 0.91,
-          confidence_level: 'High',
-          evidence: 'Pillion passenger wearing standard protective helmet.',
-          occupants_count: 2,
-          helmet_status: 'WEARING_HELMET',
-          timestamp: 'CAM-04 · Center',
-          box_2d: [500, 400, 860, 480],
-        },
-        {
-          id: 3,
-          vehicle_type: 'scooter',
-          target_label: 'Target 3 (Left Scooter Driver)',
-          category: 'NO_HELMET',
-          is_violation: true,
-          is_potential: false,
-          is_uncertain: false,
-          confidence: 0.95,
-          confidence_level: 'High',
-          evidence: 'Left scooter rider operating vehicle without protective headgear.',
-          occupants_count: 1,
-          helmet_status: 'NO_HELMET',
-          license_plate: {
-            value: 'TN-07-BK-1102',
-            confidence: 0.84,
-            status: 'READABLE',
-          },
-          timestamp: 'CAM-04 · Left Lane',
-          box_2d: [480, 260, 780, 335],
-        },
-        {
-          id: 4,
-          vehicle_type: 'motorcycle',
-          target_label: 'Target 4 (Right Motorcycle Driver)',
-          category: 'NO_HELMET',
-          is_violation: true,
-          is_potential: false,
-          is_uncertain: false,
-          confidence: 0.96,
-          confidence_level: 'High',
-          evidence: 'Right-side motorcycle rider fully exposed cranial area without helmet.',
-          occupants_count: 1,
-          helmet_status: 'NO_HELMET',
-          license_plate: {
-            value: 'TN-02-AV-6447',
-            confidence: 0.94,
-            status: 'READABLE',
-          },
-          timestamp: 'CAM-04 · Right Lane',
-          box_2d: [460, 560, 880, 630],
-        },
-        {
-          id: 5,
-          vehicle_type: 'motorcycle',
-          target_label: 'Target 5 (Background Commuter)',
-          category: 'NO_HELMET',
-          is_violation: true,
-          is_potential: false,
-          is_uncertain: false,
-          confidence: 0.87,
-          confidence_level: 'High',
-          evidence: 'Midground two-wheeler rider with exposed head.',
-          occupants_count: 1,
-          helmet_status: 'NO_HELMET',
-          license_plate: {
-            value: 'NOT_READABLE',
-            confidence: 0.35,
-            status: 'NOT_READABLE',
-          },
-          timestamp: 'CAM-04 · Midground',
-          box_2d: [480, 465, 660, 510],
-        },
-      ],
-      final_assessment: {
-        confirmed_violations: 4,
-        potential_issues: 0,
-        manual_review_required: false,
-      },
-      image_analysis: {
-        total_riders: 5,
-        wearing_helmet: 1,
-        no_helmet: 4,
-        uncertain: 0,
-      },
-      final_result: {
-        no_helmet_detected: true,
-        no_helmet_count: 4,
-      },
-      riders: [],
-    };
-  }
-
   // Core Traffic Safety Analysis Logic
   async function handleTrafficAnalysis(req: express.Request, res: express.Response) {
     try {
-      const { image, imageUrl, mimeType = 'image/jpeg' } = req.body;
+      const { image, imageUrl, mimeType = 'image/jpeg', mode = 'cloud' } = req.body;
+
+      if (mode !== 'cloud' && mode !== 'local') {
+        return res.status(400).json({ error: 'Invalid AI mode. Choose cloud or local.' });
+      }
       const rawImage = image || imageUrl;
 
       if (!rawImage) {
         return res.status(400).json({ error: 'Please choose an image to analyze.' });
-      }
-
-      if (!process.env.GEMINI_API_KEY) {
-        return res.json(generateFallbackResult('Local Engine - API Key Not Configured'));
       }
 
       let cleanBase64 = rawImage;
@@ -209,6 +71,13 @@ async function startServer() {
         } else {
           cleanBase64 = rawImage.replace(/^data:[^;]+;base64,/, '');
         }
+      }
+
+      if (!detectedMime.startsWith('image/')) {
+        return res.status(415).json({ error: 'Unsupported image type. Please upload a valid image.' });
+      }
+      if (!cleanBase64 || cleanBase64.length > 35_000_000) {
+        return res.status(413).json({ error: 'Image payload is empty or too large. Please use an image under 25 MB.' });
       }
 
       // Exhaustive multi-target scanning prompt
@@ -243,12 +112,55 @@ MANDATORY RULES:
       let lastError: any = null;
       let response: any = null;
 
+      if (mode === 'local') {
+        const ollamaBaseUrl = (process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434').replace(/\\/$/, '');
+        const ollamaModel = process.env.OLLAMA_MODEL || 'gemma3:12b';
+        let ollamaResponse: Response;
+        try {
+          ollamaResponse = await fetch(`${ollamaBaseUrl}/api/chat`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal: AbortSignal.timeout(Number(process.env.OLLAMA_TIMEOUT_MS || 120000)),
+            body: JSON.stringify({
+              model: ollamaModel,
+              stream: false,
+              format: 'json',
+              messages: [{
+                role: 'user',
+                content: `${promptText}\n\nReturn only a JSON object with this shape: {\\"quality_check\\":{\\"is_usable\\":boolean,\\"message\\":string},\\"summary\\":{\\"total_riders\\":number,\\"wearing_helmet\\":number,\\"no_helmet\\":number,\\"triple_riding\\":number,\\"cars_detected\\":number,\\"seatbelt_issues\\":number,\\"occupancy_issues\\":number,\\"uncertain\\":number},\\"detections\\":[{\\"id\\":number,\\"vehicle_type\\":\\"motorcycle\\"|\\"scooter\\"|\\"car\\"|\\"other\\",\\"target_label\\":string,\\"category\\":\\"NO_HELMET\\"|\\"TRIPLE_RIDING\\"|\\"POTENTIAL_SEATBELT_ISSUE\\"|\\"POTENTIAL_OCCUPANCY_ISSUE\\"|\\"UNCERTAIN\\"|\\"NO_CONFIRMED_VIOLATION\\",\\"is_violation\\":boolean,\\"is_potential\\":boolean,\\"is_uncertain\\":boolean,\\"confidence\\":number,\\"confidence_level\\":\\"High\\"|\\"Medium\\"|\\"Low\\",\\"evidence\\":string,\\"occupants_count\\":number,\\"helmet_status\\":\\"WEARING_HELMET\\"|\\"NO_HELMET\\"|\\"UNCERTAIN\\",\\"license_plate\\":{\\"value\\":string,\\"confidence\\":number,\\"status\\":\\"READABLE\\"|\\"PARTIAL\\"|\\"NOT_READABLE\\"}}],\\"final_assessment\\":{\\"confirmed_violations\\":number,\\"potential_issues\\":number,\\"manual_review_required\\":boolean}}. Do not invent details. If uncertain, mark UNCERTAIN. A model assessment is not legal proof.`,
+                images: [cleanBase64],
+              }],
+              options: { temperature: 0.1 },
+            }),
+          });
+        } catch (error: any) {
+          const timedOut = error?.name === 'TimeoutError';
+          return res.status(503).json({ error: timedOut
+            ? 'Local AI timed out. Try a smaller image or increase OLLAMA_TIMEOUT_MS.'
+            : 'Cannot connect to Ollama. Start Ollama and confirm the local model is available. No cloud fallback was attempted.' });
+        }
+        if (ollamaResponse.status === 404) {
+          return res.status(503).json({ error: `Ollama model '${ollamaModel}' was not found. Pull it with: ollama pull ${ollamaModel}` });
+        }
+        if (!ollamaResponse.ok) {
+          return res.status(502).json({ error: `Ollama returned an error (${ollamaResponse.status}). Check the Ollama server logs.` });
+        }
+        const localPayload: any = await ollamaResponse.json().catch(() => null);
+        const localText = localPayload?.message?.content;
+        if (typeof localText !== 'string' || !localText.trim()) {
+          return res.status(502).json({ error: 'Ollama returned an empty or invalid response. No cloud fallback was attempted.' });
+        }
+        response = { text: localText };
+      } else if (!ai) {
+        return res.status(503).json({ error: 'Gemini Cloud Mode is not configured. Add GEMINI_API_KEY or select Local Mode.' });
+      }
+
       // Models to try in priority order: gemini-3.1-flash-lite is responsive and fast; fallback to gemini-3.8-flash
       const candidateModels = ['gemini-3.1-flash-lite', 'gemini-3.8-flash'];
 
       for (const modelName of candidateModels) {
         try {
-          response = await ai.models.generateContent({
+          response = await ai!.models.generateContent({
             model: modelName,
             contents: [
               {
@@ -459,8 +371,11 @@ MANDATORY RULES:
       return res.json(parsedData);
     } catch (error: any) {
       console.error('Error analyzing traffic safety image:', error);
-      // If quota, unavailable 503, rate limit, or any API error occurs, provide robust multi-target fallback so app never breaks
-      return res.json(generateFallbackResult('Multi-Target Edge Engine'));
+      // Never turn provider failures into fabricated detections.
+      const message = mode === 'local'
+        ? 'Local AI analysis failed. Check Ollama status and model configuration. No cloud fallback was attempted.'
+        : 'Gemini analysis failed. Check your API key, quota, model availability, and try again.';
+      return res.status(502).json({ error: message });
     }
   }
 
