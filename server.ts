@@ -127,7 +127,7 @@ MANDATORY RULES:
               format: 'json',
               messages: [{
                 role: 'user',
-                content: `${promptText}\n\nReturn one JSON object with keys quality_check, summary, detections, and final_assessment. Each detection should include id, vehicle_type, target_label, category, is_violation, is_potential, is_uncertain, confidence from 0 to 1, confidence_level (High/Medium/Low), evidence, occupants_count when visible, helmet_status, and license_plate with value, confidence, and status. Use only the category and status values listed above. Do not invent details; mark unclear observations UNCERTAIN. AI output is not legal proof.`,
+                content: `${promptText}\n\nReturn one JSON object with keys quality_check, summary, detections, and final_assessment. Each detection should include id, vehicle_type, target_label, category, is_violation, is_potential, is_uncertain, confidence from 0 to 1, confidence_level (High/Medium/Low), evidence, box_2d as [ymin, xmin, ymax, xmax] on a 0-1000 scale when visible, occupants_count when visible, helmet_status, and license_plate with value, confidence, and status. Use only the category and status values listed above. Do not invent details; mark unclear observations UNCERTAIN. AI output is not legal proof.`,
                 images: [cleanBase64],
               }],
               options: { temperature: 0.1 },
@@ -331,7 +331,8 @@ MANDATORY RULES:
         parsedData.detections = parsedData.detections.map((d: any, idx: number) => ({
           ...d,
           id: idx + 1,
-          box_2d: Array.isArray(d.box_2d) && d.box_2d.length === 4 ? d.box_2d : [200, 200, 800, 800],
+          // Do not invent a bounding box when the model did not return one.
+          box_2d: Array.isArray(d.box_2d) && d.box_2d.length === 4 ? d.box_2d : undefined,
         }));
       }
 
