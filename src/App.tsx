@@ -13,7 +13,9 @@ import { FlutterMobileNav } from './components/FlutterMobileNav';
 import { SAMPLE_SCENARIOS } from './data/sampleScenarios';
 import { TrafficSafetyResponse, TrafficDetection, SampleScenario } from './types/helmet';
 import { exportViolationsToCSV } from './utils/csvExport';
-import { AlertCircle } from 'lucide-react';
+import { AlertCircle, Copy, Check, FileText } from 'lucide-react';
+import { buildChallengeSummary, validateChallengeSummaryInputs } from './utils/challengeSummary';
+import { copyTextToClipboard } from './utils/clipboard';
 
 export default function App() {
   const initialScenario = SAMPLE_SCENARIOS[0];
@@ -31,6 +33,17 @@ export default function App() {
   );
   const [sidebarMobileOpen, setSidebarMobileOpen] = useState<boolean>(false);
   const [showUploadPanel, setShowUploadPanel] = useState<boolean>(false);
+  const [aiMode, setAiMode] = useState<'cloud' | 'local'>('cloud');
+  const [challengeInput, setChallengeInput] = useState({
+    problem: '',
+    affected: '',
+    solution: '',
+    features: '',
+    assumptions: '',
+  });
+  const [challengeSummary, setChallengeSummary] = useState('');
+  const [challengeError, setChallengeError] = useState<string | null>(null);
+  const [challengeCopied, setChallengeCopied] = useState(false);
 
   const runAnalysis = async (imageData: string, sampleFallback?: SampleScenario) => {
     setIsLoading(true);
@@ -46,6 +59,7 @@ export default function App() {
         body: JSON.stringify({
           image: imageData,
           mimeType: 'image/jpeg',
+          mode: aiMode,
         }),
       });
 
@@ -63,15 +77,10 @@ export default function App() {
       }
     } catch (err: any) {
       console.warn('Analysis error:', err);
-      if (sampleFallback) {
-        setDetectionData(sampleFallback.mockResult);
-        const firstIssue = sampleFallback.mockResult.detections?.find((d) => d.is_violation || d.is_potential);
-        if (firstIssue) {
-          setSelectedDetectionId(firstIssue.id);
-        }
-      } else {
-        setErrorMessage(err.message || 'Unable to analyze this image. Please try again.');
-      }
+      // Never replace a failed live analysis with demo/mock detections.
+      setDetectionData(null);
+      setSelectedDetectionId(null);
+      setErrorMessage(err.message || 'Unable to analyze this image. Please try again.');
     } finally {
       setIsLoading(false);
     }
@@ -151,6 +160,32 @@ export default function App() {
     uncertain: 0,
   };
 
+  const handleChallengeInput = (field: keyof typeof challengeInput, value: string) => {
+    setChallengeInput((prev) => ({ ...prev, [field]: value }));
+    setChallengeError(null);
+  };
+
+  const handleGenerateChallengeSummary = () => {
+    const validation = validateChallengeSummaryInputs(challengeInput);
+    if (!validation.valid) {
+      setChallengeError(validation.message);
+      return;
+    }
+
+    const result = buildChallengeSummary(challengeInput);
+    setChallengeSummary(result);
+    setChallengeError(null);
+  };
+
+  const handleCopyChallengeSummary = async () => {
+    if (!challengeSummary) return;
+    const success = await copyTextToClipboard(challengeSummary);
+    if (success) {
+      setChallengeCopied(true);
+      window.setTimeout(() => setChallengeCopied(false), 2000);
+    }
+  };
+
   const hasViolation = (detectionData?.final_assessment?.confirmed_violations ?? 0) > 0;
   const violationCount = detectionData?.final_assessment?.confirmed_violations ?? 0;
   const potentialCount = detectionData?.final_assessment?.potential_issues ?? 0;
@@ -193,6 +228,25 @@ export default function App() {
 
         {/* Workspace Body (with bottom padding for Flutter mobile nav bar) */}
         <main className="flex-1 p-3.5 sm:p-4 lg:p-8 space-y-5 sm:space-y-6 max-w-7xl mx-auto w-full pb-24 lg:pb-8">
+          {/* AI Provider Selector */}
+          <section className="rounded-2xl border border-[#E2DDD3] bg-[#FAF8F4] p-4 sm:p-5 shadow-sm" aria-label="AI analysis mode">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h2 className="text-sm font-bold text-[#1C1917]">AI Analysis Mode</h2>
+                <p className="mt-1 text-xs text-[#57534E]">
+                  {aiMode === 'cloud'
+                    ? 'Cloud Mode sends the selected image to Gemini. Each analysis uses your Gemini API quota.'
+                    : 'Local Mode sends the image to your configured Ollama server only. It will not fall back to Gemini.'}
+                </p>
+              </div>
+              <div className="inline-flex rounded-xl border border-[#CDC5B5] bg-white p-1 self-start" role="group" aria-label="Choose AI provider">
+                <button type="button" onClick={() => setAiMode('cloud')} aria-pressed={aiMode === 'cloud'} className={`rounded-lg px-4 py-2 text-xs font-bold transition-colors ${aiMode === 'cloud' ? 'bg-[#1C1917] text-white' : 'text-[#57534E] hover:bg-[#F4F1EA]'}`}>Cloud · Gemini</button>
+                <button type="button" onClick={() => setAiMode('local')} aria-pressed={aiMode === 'local'} className={`rounded-lg px-4 py-2 text-xs font-bold transition-colors ${aiMode === 'local' ? 'bg-[#0D9488] text-white' : 'text-[#57534E] hover:bg-[#F4F1EA]'}`}>Local · Ollama</button>
+              </div>
+            </div>
+            {aiMode === 'local' && <p className="mt-3 rounded-lg bg-teal-50 p-3 text-xs text-teal-900">Requires Ollama running where the MOOS backend runs, with a vision model pulled (default: <code>gemma3:12b</code>). If MOOS is hosted remotely, this does not use your laptop’s Ollama automatically.</p>}
+          </section>
+
           {/* Error Banner */}
           {errorMessage && (
             <div className="p-4 bg-rose-50 border border-rose-200 rounded-2xl flex items-center justify-between text-rose-800 text-xs">
@@ -273,13 +327,84 @@ export default function App() {
 
           {/* TAB 3: Benchmark Ground-Truth Suite */}
           {activeTab === 'scenarios' && (
-            <PresetScenariosTab
-              onSelectScenario={(sc) => {
-                handleSelectScenario(sc);
-                setActiveTab('inspection');
-              }}
-              activeScenarioId={activeScenarioId}
-            />
+            <div className="space-y-6">
+              <PresetScenariosTab
+                onSelectScenario={(sc) => {
+                  handleSelectScenario(sc);
+                  setActiveTab('inspection');
+                }}
+                activeScenarioId={activeScenarioId}
+              />
+
+              <section className="rounded-2xl border border-[#E2DDD3] bg-[#FAF8F4] p-4 sm:p-5 shadow-sm" aria-label="Challenge summary maker">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-bold uppercase tracking-[0.2em] text-[#857F75]">Challenge Summary Maker</p>
+                    <h3 className="mt-1 text-base font-bold text-[#1C1917]">Hackathon summary</h3>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleGenerateChallengeSummary}
+                    className="rounded-lg bg-[#1C1917] px-3 py-2 text-xs font-bold text-white hover:bg-[#2C2927]"
+                  >
+                    Generate summary
+                  </button>
+                </div>
+
+                <div className="mt-5 grid gap-4 md:grid-cols-2">
+                  {[
+                    { key: 'problem', label: 'Problem or challenge' },
+                    { key: 'affected', label: 'Who is affected and why it matters' },
+                    { key: 'solution', label: 'Proposed MOOS solution' },
+                    { key: 'features', label: 'Key features and intended impact' },
+                    { key: 'assumptions', label: 'Assumptions, limitations, and what still needs validation' },
+                  ].map(({ key, label }) => (
+                    <label key={key} className="block text-xs font-bold text-[#1C1917]">
+                      <span className="mb-2 block">{label}</span>
+                      <textarea
+                        aria-label={label}
+                        value={challengeInput[key as keyof typeof challengeInput]}
+                        onChange={(event) => handleChallengeInput(key as keyof typeof challengeInput, event.target.value)}
+                        rows={key === 'problem' || key === 'affected' ? 5 : 4}
+                        className="w-full rounded-xl border border-[#CDC5B5] bg-white px-3 py-2 text-sm text-[#1C1917] shadow-sm outline-none transition focus:border-[#0D9488] focus:ring-2 focus:ring-[#99F6E4]"
+                      />
+                    </label>
+                  ))}
+                </div>
+
+                {challengeError && (
+                  <p className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-800" role="alert">
+                    {challengeError}
+                  </p>
+                )}
+
+                <div className="mt-5 rounded-2xl border border-[#E2DDD3] bg-white p-4">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2 text-[#1C1917]">
+                      <FileText className="h-4 w-4 text-[#0D9488]" />
+                      <span className="text-xs font-bold uppercase tracking-[0.2em]">Generated summary</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleCopyChallengeSummary}
+                      disabled={!challengeSummary}
+                      className="inline-flex items-center gap-2 rounded-lg border border-[#CDC5B5] bg-[#FAF8F4] px-3 py-2 text-xs font-bold text-[#1C1917] disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {challengeCopied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                      {challengeCopied ? 'Copied' : 'Copy'}
+                    </button>
+                  </div>
+                  <textarea
+                    aria-label="Challenge summary output"
+                    readOnly
+                    value={challengeSummary}
+                    onFocus={(event) => event.currentTarget.select()}
+                    rows={14}
+                    className="w-full rounded-xl border border-[#E2DDD3] bg-[#FAF8F4] px-3 py-3 text-sm leading-6 text-[#1C1917] outline-none"
+                  />
+                </div>
+              </section>
+            </div>
           )}
         </main>
       </div>
